@@ -5,10 +5,10 @@ import datetime
 from babel.dates import format_date
 import random
 
-from main import WarningEmbed, sql_input, sql_fetch
+from main import WarningEmbed, to_extras
 
 
-class Quotes(commands.Cog, description="Save the best moments in your server as a quote."):
+class Quotes(commands.Cog, description="Save the best moments in your server as a quote"):
     
     def __init__(self, bot):
         self.bot = bot
@@ -21,8 +21,17 @@ class Quotes(commands.Cog, description="Save the best moments in your server as 
         print("Quotes has loaded successfully.")
       
         
+    @to_extras(
+        description="Adds the message to a list of quotes.",
+        help="Adds the message to a list of quotes.\n "
+            + "Quote ID: A number used to uniquely identify every quote.",
+        usage="as message command",
+        caption=":speech_balloon::white_check_mark: Addquote "
+            + ":white_check_mark::speech_balloon:",
+        color=(119,178,85)
+    )
     @commands.message_command()
-    async def addquote(self, ctx: commands.Context, message: discord.Message):
+    async def addquote(self, ctx: discord.ApplicationContext, message: discord.Message):
         text = message.content.replace("\n"," ")
         author_name = message.author.name
         author_id = message.author.id
@@ -32,10 +41,14 @@ class Quotes(commands.Cog, description="Save the best moments in your server as 
         date = datetime.datetime.now()
         date = format_date(date, locale="en")
         
-        quote_id = sql_input(
+        cursor = self.bot.conn.cursor()
+        cursor.execute(
             "INSERT INTO quotes VALUES (?,?,?,?,?,?,?)",
             (text, author_name, author_id, addedby_name, addedby_id, guild_id, date)
         )
+        self.bot.conn.commit()
+        quote_id = cursor.lastrowid
+        
         em = discord.Embed(
             title=":white_check_mark: Success :white_check_mark:",
             description=f"Quote added. Quote ID: #{quote_id}.",
@@ -45,10 +58,19 @@ class Quotes(commands.Cog, description="Save the best moments in your server as 
         await ctx.respond(embed=em)
         
         
+
+    @to_extras(
+        help="Returns a quote from this server's quote list. "
+            + "Use `[person_or_id]` to specify a person or a quote ID."
+            + "\nQuote ID: A number used to uniquely identify every quote.",
+        caption=":speech_balloon: Quote :speech_balloon:",
+        color=(189,221,244),
+        usage="`/quote [person_or_id]`"
+    )
     @commands.slash_command(description="Returns a quote from this server's quote list.")
     async def quote(
         self,
-        ctx: commands.Context,
+        ctx: discord.ApplicationContext,
         person_or_id: Option(
             str, 
             "Look for a quote with a specific quote ID or written by a specific person.",
@@ -57,6 +79,7 @@ class Quotes(commands.Cog, description="Save the best moments in your server as 
         ),
     ):
         guild_id = ctx.guild.id
+        cursor = self.bot.conn.cursor()
         if person_or_id is not None:
             if person_or_id.isdigit():
                 quote_id = int(person_or_id)
@@ -64,22 +87,25 @@ class Quotes(commands.Cog, description="Save the best moments in your server as 
                     em = WarningEmbed("Quote ID cannot be negative.")
                     await ctx.respond(embed=em)
                     return
-                data = sql_fetch(
+                cursor.execute(
                     "SELECT * FROM quotes WHERE rowid=(?) AND guild_id=(?)", 
                     (quote_id, guild_id)
                 )
+                data = cursor.fetchall()
                 if len(data) == 0:
                     em = WarningEmbed("Quote ID not found.")
             else:
                 person = person_or_id
-                data = sql_fetch(
+                cursor.execute(
                     "SELECT * FROM quotes WHERE author_name=(?) AND guild_id=(?)",
                     (person, guild_id)
                 )
+                data = cursor.fetchall()
                 if len(data) == 0:
                     em = WarningEmbed(f"No quotes by {person} found.")
         else:
-            data = sql_fetch("SELECT * FROM quotes WHERE guild_id=(?)", (guild_id,))
+            cursor.execute("SELECT * FROM quotes WHERE guild_id=(?)", (guild_id,))
+            data = cursor.fetchall()
             if len(data) == 0:
                 em = WarningEmbed("This server has no quotes added yet.")
         
@@ -92,21 +118,33 @@ class Quotes(commands.Cog, description="Save the best moments in your server as 
             )
         await ctx.respond(embed=em)
         
-        
-    @commands.slash_command(description="Deletes a quote.")
+    @to_extras(
+        help="Deletes the quote associated with `[quote_id]`. "
+            + "Regular users can only delete their own quotes."
+            + "\nQuote ID: A number used to uniquely identify every quote.",
+        caption=":speech_balloon::wastebasket: Deletequote "
+            + ":wastebasket::speech_balloon:",
+        usage="`/quote <quote_id>`",
+        color=(154,170,180)
+    )  
+    @commands.slash_command(
+        description="Deletes the quote associated with `[quote_id]`.")
     async def deletequote(
         self, 
-        ctx: commands.Context, 
+        ctx: discord.ApplicationContext, 
         quote_id: Option(int, "Quote ID of the quote to delete", min_value=1)
     ):
-        data = sql_fetch("SELECT quote, author_id FROM quotes WHERE rowid=(?)", (quote_id,))
+        cursor = self.bot.conn.cursor()
+        cursor.execute("SELECT quote, author_id FROM quotes WHERE rowid=(?)", (quote_id,))
+        data = cursor.fetchall()
         if len(data) > 0:
             quote, author_id = data[0]
             permissions = ctx.channel.permissions_for(ctx.author)
             if author_id != ctx.author.id and (permissions.manage_messages is False):
                 em = WarningEmbed("You can only delete your own quotes.")
             else:
-                sql_input("DELETE FROM quotes WHERE rowid=(?)", (quote_id,))
+                cursor.execute("DELETE FROM quotes WHERE rowid=(?)", (quote_id,))
+                self.bot.conn.commit()
                 em = discord.Embed(
                     title=":white_check_mark: Success :white_check_mark:",
                     description="Quote deleted.",
@@ -118,11 +156,21 @@ class Quotes(commands.Cog, description="Save the best moments in your server as 
         await ctx.respond(embed=em)
     
     
+    @to_extras(
+        help="Gives a list of all quotes from this server. "
+            + "Only useable by mods with permission to manage messages.",
+        caption=":speech_balloon::clipboard: Quotelist :clipboard::speech_balloon:",
+        color=(255,255,255),
+        usage="`/quotelist`"
+    )
     @commands.slash_command(description="Gives a list of all quotes from this server.")
     @commands.has_permissions(manage_messages=True)
-    async def quotelist(self, ctx: commands.Context):
+    @commands.cooldown(1, 3600, commands.BucketType.guild)
+    async def quotelist(self, ctx: discord.ApplicationContext):
         guild_id = ctx.guild.id
-        data = sql_fetch("SELECT rowid, * FROM quotes WHERE guild_id=(?)", (guild_id,))
+        cursor = self.bot.conn.cursor()
+        cursor.execute("SELECT rowid, * FROM quotes WHERE guild_id=(?)", (guild_id,))
+        data = cursor.fetchall()
         pagelist=[]
         quotes_per_page=5
         for i, quote in enumerate(data):
@@ -134,10 +182,11 @@ class Quotes(commands.Cog, description="Save the best moments in your server as 
             addedby_mention = addedby.mention if addedby is not None else "[not found]"
             em = discord.Embed(
                 title=f"*{quote[1]}*",
-                description=f" by {author_mention} added by {addedby_mention} "
-                + "on {quote[7]} (ID: #{quote[0]})"
+                description=f"by {author_mention}"
             )
-            pagelist[i//5].append(em)
+            em.add_field(name="added by",
+                         value=f"{addedby_mention} on {quote[7]} (ID: #{quote[0]})")
+            pagelist[i//10].append(em)
         if pagelist == []:
             em = WarningEmbed("Quote list is empty")
             pagelist.append(em)
